@@ -63,6 +63,7 @@ async function startExpiryJob(sock) {
     expiryJobStarted = true;
 
     setInterval(async () => {
+         console.log('🔄 Expiry job running...');
         try {
             // ── REMINDER at 10 mins ────────────────────────
             const { rows: reminders } = await pool.query(
