@@ -8,6 +8,17 @@ import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import { onlineDBClient as pool } from './db.js';
 import { startEmailListener } from './email_listener.js';
+import http from 'http';
+
+
+// Keep-alive server
+http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end('Xenon bot is alive!');
+}).listen(process.env.PORT || 5000, () => {
+    console.log(`🌐 Server running on port ${process.env.PORT || 5000}`);
+});
+
 
 // ── KOBO LOGIC ─────────────────────────────────────────────
 async function assignUniqueAmount(baseAmount = 100) {
