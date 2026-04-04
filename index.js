@@ -11,6 +11,10 @@ import { startEmailListener } from './email_listener.js';
 import { usePostgresAuthState } from './auth.js';
 import http from 'http';
 
+// ── GLOBAL STATE ───────────────────────────────────────────
+let sock = null; // Global socket reference
+let expiryJobStarted = false;
+
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err.message);
 });
@@ -33,40 +37,32 @@ async function assignUniqueAmount(baseAmount = 1000) {
         `SELECT amount FROM pending_payments 
          WHERE created_at > NOW() - INTERVAL '15 minutes'`
     );
-
-    const usedKobos = new Set(rows.map(r => Math.round((r.amount % 1) * 100)));
-
+    const usedKobos = new Set(rows.map(r => Math.round((parseFloat(r.amount) % 1) * 100)));
     for (let kobo = 1; kobo <= 99; kobo++) {
-        if (!usedKobos.has(kobo)) {
-            return baseAmount + (kobo / 100);
-        }
+        if (!usedKobos.has(kobo)) return baseAmount + (kobo / 100);
     }
-
     throw new Error('All kobo slots taken.');
 }
 
 async function createPendingPayment(waId) {
     const amount = await assignUniqueAmount();
-
     await pool.query(
         `INSERT INTO pending_payments (wa_id, amount) VALUES ($1, $2)`,
         [waId, amount]
     );
-
     return amount;
 }
 
 // ── EXPIRY JOB ─────────────────────────────────────────────
-let expiryJobStarted = false;
-
-async function startExpiryJob(sock) {
+async function startExpiryJob() {
     if (expiryJobStarted) return;
     expiryJobStarted = true;
 
     setInterval(async () => {
+        if (!sock) return; // Wait until socket is initialized
         console.log('🔄 Expiry job running...');
         try {
-            // ── REMINDER at 10 mins ────────────────────────
+            // REMINDER
             const { rows: reminders } = await pool.query(
                 `SELECT wa_id, amount FROM pending_payments
                  WHERE status = 'pending'
@@ -74,41 +70,25 @@ async function startExpiryJob(sock) {
                  AND created_at > NOW() - INTERVAL '11 minutes'`
             );
 
-            console.log('Reminders found:', reminders.length, reminders);
-
             for (const row of reminders) {
-                try {
-                    const jid = `${row.wa_id}@s.whatsapp.net`;
-                    await sock.sendMessage(jid, {
-                        text: `⚠️ *Payment Reminder*\n\n` +
-                            `Your order for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* expires in *5 minutes*!\n\n` +
-                            `Please complete your transfer now or send *cancel* to cancel.`
-                    });
-                } catch (err) {
-                    console.error('Reminder send failed:', err.message);
-                }
+                const jid = `${row.wa_id}@s.whatsapp.net`;
+                await sock.sendMessage(jid, {
+                    text: `⚠️ *Payment Reminder*\n\nYour order for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* expires in *5 minutes*!`
+                }).catch(e => console.log("Reminder send failed:", e.message));
             }
 
-            // ── EXPIRE at 15 mins ──────────────────────────
+            // EXPIRE
             const { rows: expired } = await pool.query(
-                `UPDATE pending_payments 
-                 SET status = 'expired'
-                 WHERE status = 'pending'
-                 AND created_at < NOW() - INTERVAL '15 minutes'
+                `UPDATE pending_payments SET status = 'expired'
+                 WHERE status = 'pending' AND created_at < NOW() - INTERVAL '15 minutes'
                  RETURNING wa_id, amount`
             );
 
             for (const row of expired) {
-                try {
-                    const jid = `${row.wa_id}@s.whatsapp.net`;
-                    await sock.sendMessage(jid, {
-                        text: `⏰ *Order Expired*\n\n` +
-                            `Your payment request for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* has expired.\n\n` +
-                            `Send *buy* to start a new order.`
-                    });
-                } catch (err) {
-                    console.error('Expiry send failed:', err.message);
-                }
+                const jid = `${row.wa_id}@s.whatsapp.net`;
+                await sock.sendMessage(jid, {
+                    text: `⏰ *Order Expired*\n\nYour payment request for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* has expired.`
+                }).catch(e => console.log("Expiry send failed:", e.message));
             }
         } catch (err) {
             console.error('Expiry Job Error:', err.message);
@@ -116,14 +96,15 @@ async function startExpiryJob(sock) {
     }, 60 * 1000);
 }
 
-// ── WHATSAPP ───────────────────────────────────────────────
+// ── WHATSAPP CONNECTION ────────────────────────────────────
 async function connectToWhatsApp() {
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
     const { state, saveCreds } = await usePostgresAuthState();
 
-    const sock = makeWASocket({
+    // Initialize global sock
+    sock = makeWASocket({
         version,
         auth: state,
         printQRInTerminal: false,
@@ -138,24 +119,18 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('\n--- SCAN THIS QR CODE WITH WHATSAPP ---');
+            console.log('\n--- SCAN QR CODE ---');
             qrcode.generate(qr, { small: true });
-            console.log('----------------------------------------\n');
         }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed. Reason:', lastDisconnect.error?.message, 'Reconnecting:', shouldReconnect);
-
-            if (shouldReconnect) {
-                connectToWhatsApp();
-            } else {
-                console.log('❌ Logged out. Delete auth from DB and restart.');
-            }
+            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
-            console.log('✅ XENON BOT IS ONLINE AND CONNECTED!');
-            startExpiryJob(sock);
-            startEmailListener(sock);
+            console.log('✅ XENON BOT IS ONLINE!');
+            startExpiryJob();
+            startEmailListener(sock); // Ensure email listener uses the active sock
         }
     });
 
@@ -165,121 +140,47 @@ async function connectToWhatsApp() {
 
         const sender = msg.key.remoteJid;
         const waId = sender.split('@')[0];
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').toLowerCase();
 
-        // ── COMMAND: BUY ───────────────────────────────────
-        if (text?.toLowerCase() === 'buy') {
+        // COMMAND: BUY
+        if (text === 'buy') {
             try {
                 const { rows: existing } = await pool.query(
-                    `SELECT * FROM pending_payments 
-                     WHERE wa_id = $1 AND status = 'pending'
-                     ORDER BY created_at DESC LIMIT 1`,
-                    [waId]
+                    `SELECT * FROM pending_payments WHERE wa_id = $1 AND status = 'pending' LIMIT 1`, [waId]
                 );
 
                 if (existing.length > 0) {
-                    const displayAmount = Number(existing[0].amount).toLocaleString('en-NG', { minimumFractionDigits: 2 });
-                    return await sock.sendMessage(sender, {
-                        text: `⚠️ You already have a pending order for *₦${displayAmount}*.\n\n` +
-                            `Please complete the payment and send *paid* to confirm.\n\n` +
-                            `To cancel and start a new order, send *cancel*.`
+                    return await sock.sendMessage(sender, { 
+                        text: `⚠️ You already have a pending order for *₦${Number(existing[0].amount).toLocaleString('en-NG')}*.` 
                     });
                 }
 
                 const amount = await createPendingPayment(waId);
-                const displayAmount = amount.toLocaleString('en-NG', { minimumFractionDigits: 2 });
-
                 await sock.sendMessage(sender, {
-                    text: `🚀 *Xenon Payment Request*\n\n` +
-                        `Please transfer exactly *₦${displayAmount}* to:\n\n` +
-                        `Bank: *Moniepoint*\n` +
-                        `Account: *8137811382*\n` +
-                        `Name: *Kehinde Kayode Ariyibi-Busuyi*\n\n` +
-                        `⚠️ *IMPORTANT:* Transfer the *EXACT* amount (including the kobos) so the system can verify you instantly!\n\n` +
-                        `⏰ This order expires in *15 minutes*.\n\n` +
-                        `Once done, send *paid* to confirm.`
+                    text: `🚀 *Xenon Payment*\n\nTransfer exactly *₦${amount.toLocaleString('en-NG', { minimumFractionDigits: 2 })}* to:\n\nBank: *Moniepoint*\nAcc: *8137811382*\nName: *Kehinde Kayode Ariyibi-Busuyi*`
                 });
             } catch (err) {
                 console.error('Buy Error:', err);
-                await sock.sendMessage(sender, {
-                    text: '⚠️ System is busy. Please try again in a few minutes.'
-                });
             }
         }
 
-        // ── COMMAND: CANCEL ────────────────────────────────
-        if (text?.toLowerCase() === 'cancel') {
-            try {
-                const { rows } = await pool.query(
-                    `UPDATE pending_payments SET status = 'cancelled'
-                     WHERE wa_id = $1 AND status = 'pending'
-                     RETURNING amount`,
-                    [waId]
-                );
+        // COMMAND: PAID
+        if (text === 'paid') {
+            const { rows } = await pool.query(`SELECT * FROM pending_payments WHERE wa_id = $1 ORDER BY created_at DESC LIMIT 1`, [waId]);
+            if (rows.length === 0) return;
 
-                if (rows.length === 0) {
-                    return await sock.sendMessage(sender, {
-                        text: `❌ No pending order to cancel. Send *buy* to start.`
-                    });
-                }
-
-                await sock.sendMessage(sender, {
-                    text: `✅ Order cancelled. Send *buy* to start a new one.`
-                });
-            } catch (err) {
-                console.error('Cancel Error:', err);
-                await sock.sendMessage(sender, {
-                    text: '⚠️ Something went wrong. Please try again.'
-                });
+            const order = rows[0];
+            if (order.status === 'pending') {
+                await sock.sendMessage(sender, { text: `⏳ Payment not found yet. Please wait 2-5 mins for banks to sync.` });
+            } else if (order.status === 'paid') {
+                await sock.sendMessage(sender, { text: `✅ Already confirmed! Processing your order.` });
             }
         }
 
-        // ── COMMAND: PAID ──────────────────────────────────
-        if (text?.toLowerCase() === 'paid') {
-            try {
-                const { rows } = await pool.query(
-                    `SELECT * FROM pending_payments 
-                     WHERE wa_id = $1
-                     ORDER BY created_at DESC LIMIT 1`,
-                    [waId]
-                );
-
-                if (rows.length === 0) {
-                    return await sock.sendMessage(sender, {
-                        text: `❌ No order found. Send *buy* to start.`
-                    });
-                }
-
-                const order = rows[0];
-
-                if (order.status === 'paid') {
-                    return await sock.sendMessage(sender, {
-                        text: `✅ Your payment of *₦${Number(order.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* was already confirmed! Your order is being processed. 🎉`
-                    });
-                }
-
-                if (order.status === 'expired') {
-                    return await sock.sendMessage(sender, {
-                        text: `⏰ Your order expired. Send *buy* to start a new one.`
-                    });
-                }
-
-                if (order.status === 'cancelled') {
-                    return await sock.sendMessage(sender, {
-                        text: `❌ Your order was cancelled. Send *buy* to start a new one.`
-                    });
-                }
-
-                // Still pending
-                await sock.sendMessage(sender, {
-                    text: `⏳ Payment not found yet. Banks can take 2-5 mins to sync.\n\nPlease send *paid* again shortly.`
-                });
-            } catch (err) {
-                console.error('Paid Error:', err);
-                await sock.sendMessage(sender, {
-                    text: '⚠️ Something went wrong. Please try again.'
-                });
-            }
+        // COMMAND: CANCEL
+        if (text === 'cancel') {
+            await pool.query(`UPDATE pending_payments SET status = 'cancelled' WHERE wa_id = $1 AND status = 'pending'`, [waId]);
+            await sock.sendMessage(sender, { text: `✅ Order cancelled.` });
         }
     });
 }
