@@ -8,6 +8,7 @@ import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import { onlineDBClient as pool } from './db.js';
 import { startEmailListener } from './email_listener.js';
+import { usePostgresAuthState } from './auth.js';
 import http from 'http';
 
 process.on('uncaughtException', (err) => {
@@ -74,7 +75,7 @@ async function startExpiryJob(sock) {
             );
 
             console.log('Reminders found:', reminders.length, reminders);
-            
+
             for (const row of reminders) {
                 try {
                     const jid = `${row.wa_id}@s.whatsapp.net`;
@@ -120,7 +121,7 @@ async function connectToWhatsApp() {
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { state, saveCreds } = await usePostgresAuthState();
 
     const sock = makeWASocket({
         version,
