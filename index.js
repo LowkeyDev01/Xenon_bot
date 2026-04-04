@@ -10,8 +10,15 @@ import { onlineDBClient as pool } from './db.js';
 import { startEmailListener } from './email_listener.js';
 import http from 'http';
 
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err.message);
+});
 
-// Keep-alive server
+process.on('unhandledRejection', (err) => {
+    console.error('Unhandled Rejection:', err?.message);
+});
+
+// ── KEEP ALIVE ─────────────────────────────────────────────
 http.createServer((req, res) => {
     res.writeHead(200);
     res.end('Xenon bot is alive!');
@@ -19,9 +26,8 @@ http.createServer((req, res) => {
     console.log(`🌐 Server running on port ${process.env.PORT || 5000}`);
 });
 
-
 // ── KOBO LOGIC ─────────────────────────────────────────────
-async function assignUniqueAmount(baseAmount = 100) {
+async function assignUniqueAmount(baseAmount = 1000) {
     const { rows } = await pool.query(
         `SELECT amount FROM pending_payments 
          WHERE created_at > NOW() - INTERVAL '15 minutes'`
@@ -50,10 +56,33 @@ async function createPendingPayment(waId) {
 }
 
 // ── EXPIRY JOB ─────────────────────────────────────────────
+let expiryJobStarted = false;
+
 async function startExpiryJob(sock) {
+    if (expiryJobStarted) return;
+    expiryJobStarted = true;
+
     setInterval(async () => {
         try {
-            const { rows } = await pool.query(
+            // ── REMINDER at 10 mins ────────────────────────
+            const { rows: reminders } = await pool.query(
+                `SELECT wa_id, amount FROM pending_payments
+                 WHERE status = 'pending'
+                 AND created_at < NOW() - INTERVAL '10 minutes'
+                 AND created_at > NOW() - INTERVAL '11 minutes'`
+            );
+
+            for (const row of reminders) {
+                const jid = `${row.wa_id}@s.whatsapp.net`;
+                await sock.sendMessage(jid, {
+                    text: `⚠️ *Payment Reminder*\n\n` +
+                        `Your order for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* expires in *5 minutes*!\n\n` +
+                        `Please complete your transfer now or send *cancel* to cancel.`
+                });
+            }
+
+            // ── EXPIRE at 15 mins ──────────────────────────
+            const { rows: expired } = await pool.query(
                 `UPDATE pending_payments 
                  SET status = 'expired'
                  WHERE status = 'pending'
@@ -61,7 +90,7 @@ async function startExpiryJob(sock) {
                  RETURNING wa_id, amount`
             );
 
-            for (const row of rows) {
+            for (const row of expired) {
                 const jid = `${row.wa_id}@s.whatsapp.net`;
                 await sock.sendMessage(jid, {
                     text: `⏰ *Order Expired*\n\n` +
@@ -152,8 +181,8 @@ async function connectToWhatsApp() {
                     text: `🚀 *Xenon Payment Request*\n\n` +
                         `Please transfer exactly *₦${displayAmount}* to:\n\n` +
                         `Bank: *Moniepoint*\n` +
-                        `Account: *1234567890*\n` +
-                        `Name: *Your Name*\n\n` +
+                        `Account: *8137811382*\n` +
+                        `Name: *Kehinde Kayode Ariyibi-Busuyi*\n\n` +
                         `⚠️ *IMPORTANT:* Transfer the *EXACT* amount (including the kobos) so the system can verify you instantly!\n\n` +
                         `⏰ This order expires in *15 minutes*.\n\n` +
                         `Once done, send *paid* to confirm.`

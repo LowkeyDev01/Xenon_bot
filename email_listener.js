@@ -3,6 +3,7 @@ import { simpleParser } from 'mailparser';
 import { onlineDBClient as pool } from './db.js';
 
 let lastUID = 0;
+let emailListenerStarted = false;
 
 function extractPaymentDetails(text) {
     const amountMatch = text.match(/Credit Amount\s*\n\s*([0-9,]+\.[0-9]{2})/i);
@@ -54,10 +55,7 @@ async function processNewEmails(sock) {
                 body = parsed.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
             }
 
-            console.log('RAW BODY:', body);
-
             const details = extractPaymentDetails(body);
-            console.log('Extracted details:', details);
 
             if (!details) {
                 console.log('⚠️ Could not extract payment details from email.');
@@ -103,9 +101,11 @@ async function processNewEmails(sock) {
 }
 
 export async function startEmailListener(sock) {
+    if (emailListenerStarted) return;
+    emailListenerStarted = true;
+
     console.log('📧 Email listener started...');
 
-    // Get latest UID as baseline so we don't process old emails
     const client = createClient();
     try {
         await client.connect();
