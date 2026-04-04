@@ -73,6 +73,8 @@ async function startExpiryJob(sock) {
                  AND created_at > NOW() - INTERVAL '11 minutes'`
             );
 
+            console.log('Reminders found:', reminders.length, reminders);
+            
             for (const row of reminders) {
                 try {
                     const jid = `${row.wa_id}@s.whatsapp.net`;
