@@ -1,7 +1,8 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { onlineDBClient as pool } from './db.js';
-const APP_START_TIME = new Date();
+
+let lastUID = 0;
 
 function extractPaymentDetails(text) {
     const amountMatch = text.match(/Credit Amount\s*\n\s*([0-9,]+\.[0-9]{2})/i);
@@ -18,8 +19,8 @@ function extractPaymentDetails(text) {
     };
 }
 
-async function processNewEmails(sock) {
-    const client = new ImapFlow({
+function createClient() {
+    return new ImapFlow({
         host: 'imap.gmail.com',
         port: 993,
         secure: true,
@@ -29,28 +30,34 @@ async function processNewEmails(sock) {
         },
         logger: false
     });
+}
+
+async function processNewEmails(sock) {
+    const client = createClient();
 
     try {
         await client.connect();
         await client.mailboxOpen('INBOX');
 
-        const since = new Date(APP_START_TIME);
-        since.setMinutes(since.getMinutes() - 1);
+        const searchCriteria = lastUID > 0
+            ? { from: 'moniepoint', seen: false, uid: `${lastUID + 1}:*` }
+            : { from: 'moniepoint', seen: false };
 
-        const messages = client.fetch(
-            { from: 'moniepoint', seen: false, since },
-            { source: true }
-        );
+        const messages = client.fetch(searchCriteria, { source: true, uid: true });
 
         for await (const msg of messages) {
-            const parsed = simpleParser(msg.source);
-            const body = parsed.text || '';
+            if (msg.uid > lastUID) lastUID = msg.uid;
+
+            const parsed = await simpleParser(msg.source);
+            let body = parsed.text || '';
+            if (!body && parsed.html) {
+                body = parsed.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+            }
 
             console.log('RAW BODY:', body);
 
             const details = extractPaymentDetails(body);
-
-             console.log('Extracted details:', details);
+            console.log('Extracted details:', details);
 
             if (!details) {
                 console.log('⚠️ Could not extract payment details from email.');
@@ -75,7 +82,7 @@ async function processNewEmails(sock) {
                 continue;
             }
 
-            console.log(`✅ Matched! wa_id: ${rows[0].wa_id}, sender: ${details.senderName}`);
+            console.log(`✅ Matched! wa_id: ${rows[0].wa_id}`);
 
             const jid = `${rows[0].wa_id}@s.whatsapp.net`;
             await sock.sendMessage(jid, {
@@ -91,14 +98,27 @@ async function processNewEmails(sock) {
     } finally {
         try {
             if (client.usable) await client.logout();
-        } catch (_) {
-            // connection already gone, ignore
-        }
+        } catch (_) {}
     }
 }
 
 export async function startEmailListener(sock) {
     console.log('📧 Email listener started...');
-    await processNewEmails(sock);
+
+    // Get latest UID as baseline so we don't process old emails
+    const client = createClient();
+    try {
+        await client.connect();
+        const mailbox = await client.mailboxOpen('INBOX');
+        lastUID = mailbox.uidNext - 1;
+        console.log(`📧 Starting from UID: ${lastUID}`);
+    } catch (err) {
+        console.error('Email init error:', err);
+    } finally {
+        try {
+            if (client.usable) await client.logout();
+        } catch (_) {}
+    }
+
     setInterval(() => processNewEmails(sock), 30 * 1000);
 }
