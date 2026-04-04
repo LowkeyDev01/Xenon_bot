@@ -1,3 +1,4 @@
+import { initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
 import { onlineDBClient as pool } from './db.js';
 
 export async function usePostgresAuthState() {
@@ -6,7 +7,8 @@ export async function usePostgresAuthState() {
             'SELECT data FROM whatsapp_auth WHERE id = $1',
             [id]
         );
-        return rows[0]?.data || null;
+        if (!rows[0]) return null;
+        return JSON.parse(JSON.stringify(rows[0].data), BufferJSON.reviver);
     }
 
     async function writeData(id, data) {
@@ -14,7 +16,7 @@ export async function usePostgresAuthState() {
             `INSERT INTO whatsapp_auth (id, data, updated_at) 
              VALUES ($1, $2, NOW())
              ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()`,
-            [id, JSON.stringify(data)]
+            [id, JSON.stringify(data, BufferJSON.replacer)]
         );
     }
 
@@ -22,11 +24,11 @@ export async function usePostgresAuthState() {
         await pool.query('DELETE FROM whatsapp_auth WHERE id = $1', [id]);
     }
 
-    const creds = await readData('creds');
+    const creds = await readData('creds') || initAuthCreds();
 
     return {
         state: {
-            creds: creds || {},
+            creds,
             keys: {
                 get: async (type, ids) => {
                     const data = {};
@@ -38,7 +40,7 @@ export async function usePostgresAuthState() {
                 },
                 set: async (data) => {
                     for (const [type, ids] of Object.entries(data)) {
-                        for (const [id, value] of Object.entries(ids)) {
+                        for (const [id, value] of Object.entries(ids || {})) {
                             if (value) {
                                 await writeData(`${type}-${id}`, value);
                             } else {
@@ -50,7 +52,6 @@ export async function usePostgresAuthState() {
             }
         },
         saveCreds: async () => {
-            const { state } = await usePostgresAuthState();
             await writeData('creds', state.creds);
         }
     };
