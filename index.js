@@ -27,7 +27,7 @@ http.createServer((req, res) => {
 });
 
 // ── KOBO LOGIC ─────────────────────────────────────────────
-async function assignUniqueAmount(baseAmount = 100) {
+async function assignUniqueAmount(baseAmount = 1000) {
     const { rows } = await pool.query(
         `SELECT amount FROM pending_payments 
          WHERE created_at > NOW() - INTERVAL '15 minutes'`
@@ -69,7 +69,7 @@ async function startExpiryJob(sock) {
             const { rows: reminders } = await pool.query(
                 `SELECT wa_id, amount FROM pending_payments
                  WHERE status = 'pending'
-                 AND created_at < NOW() - INTERVAL '10 minutes'
+                 AND created_at < NOW() - INTERVAL '9 minutes'
                  AND created_at > NOW() - INTERVAL '11 minutes'`
             );
 
