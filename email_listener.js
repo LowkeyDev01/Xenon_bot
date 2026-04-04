@@ -45,7 +45,12 @@ async function processNewEmails(sock) {
         for await (const msg of messages) {
             const parsed = simpleParser(msg.source);
             const body = parsed.text || '';
+
+            console.log('RAW BODY:', body);
+
             const details = extractPaymentDetails(body);
+
+             console.log('Extracted details:', details);
 
             if (!details) {
                 console.log('⚠️ Could not extract payment details from email.');
