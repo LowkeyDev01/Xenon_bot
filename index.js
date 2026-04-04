@@ -27,7 +27,7 @@ http.createServer((req, res) => {
 });
 
 // ── KOBO LOGIC ─────────────────────────────────────────────
-async function assignUniqueAmount(baseAmount = 1000) {
+async function assignUniqueAmount(baseAmount = 100) {
     const { rows } = await pool.query(
         `SELECT amount FROM pending_payments 
          WHERE created_at > NOW() - INTERVAL '15 minutes'`
@@ -63,7 +63,7 @@ async function startExpiryJob(sock) {
     expiryJobStarted = true;
 
     setInterval(async () => {
-         console.log('🔄 Expiry job running...');
+        console.log('🔄 Expiry job running...');
         try {
             // ── REMINDER at 10 mins ────────────────────────
             const { rows: reminders } = await pool.query(
@@ -74,12 +74,16 @@ async function startExpiryJob(sock) {
             );
 
             for (const row of reminders) {
-                const jid = `${row.wa_id}@s.whatsapp.net`;
-                await sock.sendMessage(jid, {
-                    text: `⚠️ *Payment Reminder*\n\n` +
-                        `Your order for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* expires in *5 minutes*!\n\n` +
-                        `Please complete your transfer now or send *cancel* to cancel.`
-                });
+                try {
+                    const jid = `${row.wa_id}@s.whatsapp.net`;
+                    await sock.sendMessage(jid, {
+                        text: `⚠️ *Payment Reminder*\n\n` +
+                            `Your order for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* expires in *5 minutes*!\n\n` +
+                            `Please complete your transfer now or send *cancel* to cancel.`
+                    });
+                } catch (err) {
+                    console.error('Reminder send failed:', err.message);
+                }
             }
 
             // ── EXPIRE at 15 mins ──────────────────────────
@@ -92,15 +96,19 @@ async function startExpiryJob(sock) {
             );
 
             for (const row of expired) {
-                const jid = `${row.wa_id}@s.whatsapp.net`;
-                await sock.sendMessage(jid, {
-                    text: `⏰ *Order Expired*\n\n` +
-                        `Your payment request for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* has expired.\n\n` +
-                        `Send *buy* to start a new order.`
-                });
+                try {
+                    const jid = `${row.wa_id}@s.whatsapp.net`;
+                    await sock.sendMessage(jid, {
+                        text: `⏰ *Order Expired*\n\n` +
+                            `Your payment request for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* has expired.\n\n` +
+                            `Send *buy* to start a new order.`
+                    });
+                } catch (err) {
+                    console.error('Expiry send failed:', err.message);
+                }
             }
         } catch (err) {
-            console.error('Expiry Job Error:', err);
+            console.error('Expiry Job Error:', err.message);
         }
     }, 60 * 1000);
 }
@@ -182,8 +190,8 @@ async function connectToWhatsApp() {
                     text: `🚀 *Xenon Payment Request*\n\n` +
                         `Please transfer exactly *₦${displayAmount}* to:\n\n` +
                         `Bank: *Moniepoint*\n` +
-                        `Account: *8137811382*\n` +
-                        `Name: *Kehinde Kayode Ariyibi-Busuyi*\n\n` +
+                        `Account: *1234567890*\n` +
+                        `Name: *Your Name*\n\n` +
                         `⚠️ *IMPORTANT:* Transfer the *EXACT* amount (including the kobos) so the system can verify you instantly!\n\n` +
                         `⏰ This order expires in *15 minutes*.\n\n` +
                         `Once done, send *paid* to confirm.`
