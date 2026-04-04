@@ -26,31 +26,33 @@ export async function usePostgresAuthState() {
 
     const creds = await readData('creds') || initAuthCreds();
 
-    return {
-        state: {
-            creds,
-            keys: {
-                get: async (type, ids) => {
-                    const data = {};
-                    for (const id of ids) {
-                        const value = await readData(`${type}-${id}`);
-                        if (value) data[id] = value;
-                    }
-                    return data;
-                },
-                set: async (data) => {
-                    for (const [type, ids] of Object.entries(data)) {
-                        for (const [id, value] of Object.entries(ids || {})) {
-                            if (value) {
-                                await writeData(`${type}-${id}`, value);
-                            } else {
-                                await removeData(`${type}-${id}`);
-                            }
+    const state = {
+        creds,
+        keys: {
+            get: async (type, ids) => {
+                const data = {};
+                for (const id of ids) {
+                    const value = await readData(`${type}-${id}`);
+                    if (value) data[id] = value;
+                }
+                return data;
+            },
+            set: async (data) => {
+                for (const [type, ids] of Object.entries(data)) {
+                    for (const [id, value] of Object.entries(ids || {})) {
+                        if (value) {
+                            await writeData(`${type}-${id}`, value);
+                        } else {
+                            await removeData(`${type}-${id}`);
                         }
                     }
                 }
             }
-        },
+        }
+    };
+
+    return {
+        state,
         saveCreds: async () => {
             await writeData('creds', state.creds);
         }
