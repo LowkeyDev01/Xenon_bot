@@ -27,6 +27,12 @@ http.createServer((req, res) => {
     console.log(`🌐 Server running on port ${process.env.PORT || 5000}`);
 });
 
+// ── HELPER ─────────────────────────────────────────────────
+function buildJid(waId) {
+    if (waId.includes('@')) return waId;
+    return `${waId}@s.whatsapp.net`;
+}
+
 // ── KOBO LOGIC ─────────────────────────────────────────────
 async function assignUniqueAmount(baseAmount = 1000) {
     const { rows } = await pool.query(
@@ -80,7 +86,7 @@ function startExpiryJob() {
 
             for (const row of reminders) {
                 try {
-                    const jid = `${row.wa_id}@s.whatsapp.net`;
+                    const jid = buildJid(row.wa_id);
                     await currentSock.sendMessage(jid, {
                         text: `⚠️ *Payment Reminder*\n\n` +
                             `Your order for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* expires in *5 minutes*!\n\n` +
@@ -103,7 +109,7 @@ function startExpiryJob() {
 
             for (const row of expired) {
                 try {
-                    const jid = `${row.wa_id}@s.whatsapp.net`;
+                    const jid = buildJid(row.wa_id);
                     await currentSock.sendMessage(jid, {
                         text: `⏰ *Order Expired*\n\n` +
                             `Your payment request for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* has expired.\n\n` +
@@ -172,7 +178,10 @@ async function connectToWhatsApp() {
 
         const sender = msg.key.remoteJid;
         console.log('Full JID:', sender);
-        const waId = sender.split('@')[0];
+
+        // Handle both @s.whatsapp.net and @lid formats
+        const waId = sender.includes('@lid') ? sender : sender.split('@')[0];
+
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
         // ── COMMAND: BUY ───────────────────────────────────

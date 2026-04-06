@@ -10,6 +10,11 @@ export function updateSock(sock) {
     currentSock = sock;
 }
 
+function buildJid(waId) {
+    if (waId.includes('@')) return waId;
+    return `${waId}@s.whatsapp.net`;
+}
+
 function extractPaymentDetails(text) {
     const amountMatch = text.match(/Credit Amount\s*\n\s*([0-9,]+\.[0-9]{2})/i);
     const senderMatch = text.match(/Sender's Name:\s*\n\s*from (.+)/i);
@@ -88,7 +93,7 @@ async function processNewEmails() {
 
             console.log(`✅ Matched! wa_id: ${rows[0].wa_id}`);
 
-            const jid = `${rows[0].wa_id}@s.whatsapp.net`;
+            const jid = buildJid(rows[0].wa_id);
             await currentSock.sendMessage(jid, {
                 text: `✅ *Payment Confirmed!*\n\n` +
                     `We've received your payment of *₦${Number(rows[0].amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}*.\n\n` +
