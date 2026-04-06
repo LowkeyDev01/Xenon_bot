@@ -125,7 +125,6 @@ async function processNewEmails() {
 
             await currentSock.sendMessage(jid, {
                 text: `🎉 *Your Code*\n\n` +
-                    `Here is your code: *${code}*\n\n` +
                     `Keep it safe!`
             });
             await currentSock.sendMessage(jid, {
