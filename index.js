@@ -210,8 +210,8 @@ async function connectToWhatsApp() {
                     text: `🚀 *Xenon Payment Request*\n\n` +
                         `Please transfer exactly *₦${displayAmount}* to:\n\n` +
                         `Bank: *Moniepoint*\n` +
-                        `Account: *1234567890*\n` +
-                        `Name: *Your Name*\n\n` +
+                        `Account: *8137811382*\n` +
+                        `Name: *Kehinde Kayode Ariyibi-Busuyi*\n\n` +
                         `⚠️ *IMPORTANT:* Transfer the *EXACT* amount (including the kobos) so the system can verify you instantly!\n\n` +
                         `⏰ This order expires in *15 minutes*.\n\n` +
                         `Once done, send *paid* to confirm.`
