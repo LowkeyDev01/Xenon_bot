@@ -171,6 +171,7 @@ async function connectToWhatsApp() {
         if (!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
+        console.log('Full JID:', sender);
         const waId = sender.split('@')[0];
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
 
