@@ -4,6 +4,11 @@ import { onlineDBClient as pool } from './db.js';
 
 let lastUID = 0;
 let emailListenerStarted = false;
+let currentSock = null;
+
+export function updateSock(sock) {
+    currentSock = sock;
+}
 
 function extractPaymentDetails(text) {
     const amountMatch = text.match(/Credit Amount\s*\n\s*([0-9,]+\.[0-9]{2})/i);
@@ -33,7 +38,8 @@ function createClient() {
     });
 }
 
-async function processNewEmails(sock) {
+async function processNewEmails() {
+    if (!currentSock) return;
     const client = createClient();
 
     try {
@@ -83,7 +89,7 @@ async function processNewEmails(sock) {
             console.log(`✅ Matched! wa_id: ${rows[0].wa_id}`);
 
             const jid = `${rows[0].wa_id}@s.whatsapp.net`;
-            await sock.sendMessage(jid, {
+            await currentSock.sendMessage(jid, {
                 text: `✅ *Payment Confirmed!*\n\n` +
                     `We've received your payment of *₦${Number(rows[0].amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}*.\n\n` +
                     `Your order is being processed. 🎉`
@@ -92,7 +98,7 @@ async function processNewEmails(sock) {
             await client.messageFlagsAdd({ uid: msg.uid }, ['\\Seen']);
         }
     } catch (err) {
-        console.error('Email Listener Error:', err);
+        console.error('Email Listener Error:', err.message);
     } finally {
         try {
             if (client.usable) await client.logout();
@@ -100,7 +106,7 @@ async function processNewEmails(sock) {
     }
 }
 
-export async function startEmailListener(sock) {
+export async function startEmailListener() {
     if (emailListenerStarted) return;
     emailListenerStarted = true;
 
@@ -113,12 +119,12 @@ export async function startEmailListener(sock) {
         lastUID = mailbox.uidNext - 1;
         console.log(`📧 Starting from UID: ${lastUID}`);
     } catch (err) {
-        console.error('Email init error:', err);
+        console.error('Email init error:', err.message);
     } finally {
         try {
             if (client.usable) await client.logout();
         } catch (_) {}
     }
 
-    setInterval(() => processNewEmails(sock), 30 * 1000);
+    setInterval(() => processNewEmails(), 30 * 1000);
 }

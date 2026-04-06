@@ -7,7 +7,7 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import { onlineDBClient as pool } from './db.js';
-import { startEmailListener } from './email_listener.js';
+import { startEmailListener, updateSock as updateEmailSock } from './email_listener.js';
 import { usePostgresAuthState } from './auth.js';
 import http from 'http';
 
@@ -47,26 +47,28 @@ async function assignUniqueAmount(baseAmount = 1000) {
 
 async function createPendingPayment(waId) {
     const amount = await assignUniqueAmount();
-
     await pool.query(
         `INSERT INTO pending_payments (wa_id, amount) VALUES ($1, $2)`,
         [waId, amount]
     );
-
     return amount;
 }
+
+// ── SHARED SOCK ────────────────────────────────────────────
+let currentSock = null;
 
 // ── EXPIRY JOB ─────────────────────────────────────────────
 let expiryJobStarted = false;
 
-async function startExpiryJob(sock) {
+function startExpiryJob() {
     if (expiryJobStarted) return;
     expiryJobStarted = true;
 
     setInterval(async () => {
+        if (!currentSock) return;
         console.log('🔄 Expiry job running...');
         try {
-            // ── REMINDER at 10 mins ────────────────────────
+            // ── REMINDER at 9 mins ─────────────────────────
             const { rows: reminders } = await pool.query(
                 `SELECT wa_id, amount FROM pending_payments
                  WHERE status = 'pending'
@@ -74,16 +76,17 @@ async function startExpiryJob(sock) {
                  AND created_at > NOW() - INTERVAL '11 minutes'`
             );
 
-            console.log('Reminders found:', reminders.length, reminders);
+            console.log('Reminders found:', reminders.length);
 
             for (const row of reminders) {
                 try {
                     const jid = `${row.wa_id}@s.whatsapp.net`;
-                    await sock.sendMessage(jid, {
+                    await currentSock.sendMessage(jid, {
                         text: `⚠️ *Payment Reminder*\n\n` +
                             `Your order for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* expires in *5 minutes*!\n\n` +
                             `Please complete your transfer now or send *cancel* to cancel.`
                     });
+                    console.log(`✅ Reminder sent to ${row.wa_id}`);
                 } catch (err) {
                     console.error('Reminder send failed:', err.message);
                 }
@@ -101,11 +104,12 @@ async function startExpiryJob(sock) {
             for (const row of expired) {
                 try {
                     const jid = `${row.wa_id}@s.whatsapp.net`;
-                    await sock.sendMessage(jid, {
+                    await currentSock.sendMessage(jid, {
                         text: `⏰ *Order Expired*\n\n` +
                             `Your payment request for *₦${Number(row.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}* has expired.\n\n` +
                             `Send *buy* to start a new order.`
                     });
+                    console.log(`✅ Expiry sent to ${row.wa_id}`);
                 } catch (err) {
                     console.error('Expiry send failed:', err.message);
                 }
@@ -146,16 +150,19 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reason:', lastDisconnect.error?.message, 'Reconnecting:', shouldReconnect);
+            currentSock = null;
 
             if (shouldReconnect) {
                 connectToWhatsApp();
             } else {
-                console.log('❌ Logged out. Delete auth from DB and restart.');
+                console.log('❌ Logged out. Clear whatsapp_auth table and restart.');
             }
         } else if (connection === 'open') {
+            currentSock = sock;
+            updateEmailSock(sock);
             console.log('✅ XENON BOT IS ONLINE AND CONNECTED!');
-            startExpiryJob(sock);
-            startEmailListener(sock);
+            startExpiryJob();
+            startEmailListener();
         }
     });
 
@@ -193,14 +200,14 @@ async function connectToWhatsApp() {
                     text: `🚀 *Xenon Payment Request*\n\n` +
                         `Please transfer exactly *₦${displayAmount}* to:\n\n` +
                         `Bank: *Moniepoint*\n` +
-                        `Account: *8137811382*\n` +
-                        `Name: *Kehinde Kayode Ariyibi-Busuyi*\n\n` +
+                        `Account: *1234567890*\n` +
+                        `Name: *Your Name*\n\n` +
                         `⚠️ *IMPORTANT:* Transfer the *EXACT* amount (including the kobos) so the system can verify you instantly!\n\n` +
                         `⏰ This order expires in *15 minutes*.\n\n` +
                         `Once done, send *paid* to confirm.`
                 });
             } catch (err) {
-                console.error('Buy Error:', err);
+                console.error('Buy Error:', err.message);
                 await sock.sendMessage(sender, {
                     text: '⚠️ System is busy. Please try again in a few minutes.'
                 });
@@ -227,7 +234,7 @@ async function connectToWhatsApp() {
                     text: `✅ Order cancelled. Send *buy* to start a new one.`
                 });
             } catch (err) {
-                console.error('Cancel Error:', err);
+                console.error('Cancel Error:', err.message);
                 await sock.sendMessage(sender, {
                     text: '⚠️ Something went wrong. Please try again.'
                 });
@@ -270,12 +277,11 @@ async function connectToWhatsApp() {
                     });
                 }
 
-                // Still pending
                 await sock.sendMessage(sender, {
                     text: `⏳ Payment not found yet. Banks can take 2-5 mins to sync.\n\nPlease send *paid* again shortly.`
                 });
             } catch (err) {
-                console.error('Paid Error:', err);
+                console.error('Paid Error:', err.message);
                 await sock.sendMessage(sender, {
                     text: '⚠️ Something went wrong. Please try again.'
                 });
