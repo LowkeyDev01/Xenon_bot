@@ -122,11 +122,14 @@ async function processNewEmails() {
                     `We've received your payment of *₦${Number(rows[0].amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}*.\n\n` +
                     `Your order is being processed. 🎉`
             });
-            
+
             await currentSock.sendMessage(jid, {
                 text: `🎉 *Your Code*\n\n` +
                     `Here is your code: *${code}*\n\n` +
                     `Keep it safe!`
+            });
+            await currentSock.sendMessage(jid, {
+                text: `*${code}*`
             });
 
             await client.messageFlagsAdd({ uid: msg.uid }, ['\\Seen']);
