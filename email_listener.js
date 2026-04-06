@@ -91,13 +91,42 @@ async function processNewEmails() {
                 continue;
             }
 
-            console.log(`✅ Matched! wa_id: ${rows[0].wa_id}`);
+            // --- FIX START ---
+            const wa_id = rows[0].wa_id;
+            const jid = buildJid(wa_id);
+            // --- FIX END ---
 
-            const jid = buildJid(rows[0].wa_id);
+            console.log(`✅ Matched! wa_id: ${wa_id}`);
+
+            const updateResult = await pool.query(
+                `UPDATE codes SET is_bought = true, bought_at = NOW(), wa_id = $1 
+     WHERE code_string = (
+         SELECT code_string FROM codes 
+         WHERE is_bought = false AND account_type = 'USER' 
+         FOR UPDATE SKIP LOCKED LIMIT 1
+     ) RETURNING code_string`,
+                [wa_id]
+            );
+
+            if (updateResult.rows.length === 0) {
+                await currentSock.sendMessage(jid, {
+                    text: `❌ No codes available at the moment. Please contact support.`
+                });
+                continue;
+            }
+
+            const code = updateResult.rows[0].code_string;
+
             await currentSock.sendMessage(jid, {
                 text: `✅ *Payment Confirmed!*\n\n` +
                     `We've received your payment of *₦${Number(rows[0].amount).toLocaleString('en-NG', { minimumFractionDigits: 2 })}*.\n\n` +
                     `Your order is being processed. 🎉`
+            });
+            
+            await currentSock.sendMessage(jid, {
+                text: `🎉 *Your Code*\n\n` +
+                    `Here is your code: *${code}*\n\n` +
+                    `Keep it safe!`
             });
 
             await client.messageFlagsAdd({ uid: msg.uid }, ['\\Seen']);
@@ -107,7 +136,7 @@ async function processNewEmails() {
     } finally {
         try {
             if (client.usable) await client.logout();
-        } catch (_) {}
+        } catch (_) { }
     }
 }
 
@@ -128,7 +157,7 @@ export async function startEmailListener() {
     } finally {
         try {
             if (client.usable) await client.logout();
-        } catch (_) {}
+        } catch (_) { }
     }
 
     setInterval(() => processNewEmails(), 30 * 1000);
