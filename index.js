@@ -14,7 +14,6 @@ process.on('unhandledRejection', (err) => {
 // ── EXPRESS & CORS CONFIGURATION ───────────────────────────
 const app = express();
 
-// Safe open wildcard settings that capture pre-flight CORS operations natively
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -24,34 +23,35 @@ app.options('*', cors());
 
 app.use(express.json());
 
-// ── TIMEZONE-SAFE INTEGRATION KOBO LOGIC ───────────────────
+// ── TIMEZONE-IMMUNE KOBO LOGIC ─────────────────────────────
 async function assignUniqueAmount(baseAmount = 1000) {
-    // 1. Calculate exactly 15 minutes ago using JavaScript's system clock
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    // 1. Get raw numeric Unix timestamp from JavaScript (e.g., 1719874500000)
+    const fifteenMinutesAgoEpoch = Date.now() - 15 * 60 * 1000;
 
-    // 2. Query using the explicit UTC ISO string to bypass database timezone discrepancies
+    // 2. Convert database created_at column to epoch milliseconds for direct numeric comparison
     const { rows } = await pool.query(
         `SELECT amount FROM pending_payments 
          WHERE status = 'pending'
-         AND created_at > $1`,
-        [fifteenMinutesAgo]
+         AND EXTRACT(EPOCH FROM created_at) * 1000 > $1`,
+        [fifteenMinutesAgoEpoch]
     );
 
-    // 3. Convert decimal values to clean integers to eliminate floating point issues
+    // 3. Robust conversion handling PostgreSQL numeric strings safely
     const usedKobos = new Set(
         rows.map(r => {
-            const totalKobo = Math.round(parseFloat(r.amount) * 100);
+            const parsedAmount = typeof r.amount === 'string' ? parseFloat(r.amount) : r.amount;
+            const totalKobo = Math.round(parsedAmount * 100);
             return totalKobo % 100;
         })
     );
 
-    console.log(`📊 Active Kobo slots taken in the last 15m:`, Array.from(usedKobos));
+    console.log(`📊 Current Kobos in use (last 15 mins):`, Array.from(usedKobos));
 
-    // 4. Find the first empty slot from .01 to .99
+    // 4. Fallback sequence scanning for the first empty fraction slot (.01 to .99)
     for (let kobo = 1; kobo <= 99; kobo++) {
         if (!usedKobos.has(kobo)) {
             const finalAmount = parseFloat((baseAmount + (kobo / 100)).toFixed(2));
-            console.log(`✅ Assigned unique slot: ₦${finalAmount}`);
+            console.log(`✅ Unique amount allocated: ₦${finalAmount}`);
             return finalAmount;
         }
     }
@@ -72,14 +72,13 @@ async function createPendingPayment(phone) {
 function startExpiryJob() {
     setInterval(async () => {
         try {
-            // Also updated to use explicit JS clock string to keep expiration synced perfectly
-            const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+            const fifteenMinutesAgoEpoch = Date.now() - 15 * 60 * 1000;
             await pool.query(
                 `UPDATE pending_payments 
                  SET status = 'expired'
                  WHERE status = 'pending'
-                 AND created_at < $1`,
-                [fifteenMinutesAgo]
+                 AND EXTRACT(EPOCH FROM created_at) * 1000 < $1`,
+                [fifteenMinutesAgoEpoch]
             );
         } catch (err) {
             console.error('Expiry Job Error:', err.message);
@@ -205,3 +204,4 @@ app.listen(process.env.PORT || 5000, () => {
 
 startExpiryJob();
 startEmailListener();
+        
