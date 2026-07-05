@@ -6,17 +6,24 @@ let lastUID = 0;
 let emailListenerStarted = false;
 
 function extractPaymentDetails(text) {
-    const amountMatch = text.match(/Credit Amount\s*\n\s*([0-9,]+\.[0-9]{2})/i);
-    const senderMatch = text.match(/Sender's Name:\s*\n\s*from (.+)/i);
-    const dateTimeMatch = text.match(/Date & Time:\s*\n\s*(.+)\s*\|\s*(.+)/i);
+    // Collapse all HTML spacing fragments, line breaks, and tabs into a single clean line string
+    const cleanText = text.replace(/\s+/g, ' ').trim();
+    
+    // Debug log to trace matching text in your server stdout
+    console.log("🔍 Cleaned Email Text for matching:", cleanText);
+
+    // Matches Moniepoint receipt structures resiliently regardless of changing layout nodes
+    const amountMatch = cleanText.match(/Credit Amount\s*[:\-]?\s*([0-9,]+\.[0-9]{2})/i);
+    const senderMatch = cleanText.match(/Sender(?:'s)?\s*Name\s*[:\-]?\s*(?:from\s+)?([^|]+)/i);
+    const dateTimeMatch = cleanText.match(/Date\s*&\s*Time\s*[:\-]?\s*([^|]+)\|([^|\n]+)/i);
 
     if (!amountMatch) return null;
 
     return {
         amount: parseFloat(amountMatch[1].replace(/,/g, '')),
-        senderName: senderMatch ? senderMatch[1].trim() : null,
-        date: dateTimeMatch ? dateTimeMatch[1].trim() : null,
-        time: dateTimeMatch ? dateTimeMatch[2].trim() : null,
+        senderName: senderMatch ? senderMatch[1].trim() : 'Unknown Sender',
+        date: dateTimeMatch ? dateTimeMatch[1].trim() : new Date().toLocaleDateString(),
+        time: dateTimeMatch ? dateTimeMatch[2].trim() : new Date().toLocaleTimeString(),
     };
 }
 
@@ -29,7 +36,9 @@ function createClient() {
             user: process.env.GMAIL_USER,
             pass: process.env.GMAIL_APP_PASSWORD
         },
-        logger: false
+        logger: false,
+        connectionTimeout: 15000,
+        greetingTimeout: 15000
     });
 }
 
@@ -40,29 +49,33 @@ async function processNewEmails() {
         await client.connect();
         await client.mailboxOpen('INBOX');
 
-        const searchCriteria = lastUID > 0
-            ? { from: 'moniepoint', seen: false, uid: `${lastUID + 1}:*` }
-            : { from: 'moniepoint', seen: false };
-
+        const searchCriteria = { from: 'moniepoint', seen: false };
         const messages = client.fetch(searchCriteria, { source: true, uid: true });
 
+        // Batch collector to safely execute flags after the live stream closes
+        const uidsToMarkAsSeen = [];
+
         for await (const msg of messages) {
+            if (msg.uid <= lastUID) continue; 
             if (msg.uid > lastUID) lastUID = msg.uid;
 
+            console.log(`📧 Found new unread Moniepoint email! UID: ${msg.uid}`);
+
             const parsed = await simpleParser(msg.source);
+            
             let body = parsed.text || '';
             if (!body && parsed.html) {
-                body = parsed.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+                body = parsed.html.replace(/<[^>]*>/g, ' ');
             }
 
             const details = extractPaymentDetails(body);
 
             if (!details) {
-                console.log('⚠️ Could not extract payment details from email.');
+                console.log('⚠️ Could not match pattern fields inside this email.');
                 continue;
             }
 
-            console.log(`💰 Payment detected: ₦${details.amount} from ${details.senderName} on ${details.date} at ${details.time}`);
+            console.log(`💰 Payment parsed: ₦${details.amount} from ${details.senderName}`);
 
             const { rows } = await pool.query(
                 `UPDATE pending_payments
@@ -76,15 +89,22 @@ async function processNewEmails() {
             );
 
             if (rows.length === 0) {
-                console.log(`⚠️ No pending order found for ₦${details.amount}`);
+                console.log(`⚠️ No active pending database record matched for exactly ₦${details.amount}`);
                 continue;
             }
 
-            console.log(`✅ Payment matched! wa_id: ${rows[0].wa_id}`);
-            await client.messageFlagsAdd({ uid: msg.uid }, ['\\Seen']);
+            console.log(`✅ Database Updated successfully! WhatsApp ID: ${rows[0].wa_id}`);
+            uidsToMarkAsSeen.push(msg.uid);
         }
+
+        // Apply SEEN status outside the fetch iteration loop to avoid stream collision deadlocks
+        if (uidsToMarkAsSeen.length > 0) {
+            await client.messageFlagsAdd({ uid: uidsToMarkAsSeen }, ['\\Seen']);
+            console.log(`🏁 Successfully marked UIDs [${uidsToMarkAsSeen.join(', ')}] as SEEN.`);
+        }
+
     } catch (err) {
-        console.error('Email Listener Error:', err.message);
+        console.error('❌ Email Processing Error:', err.message);
     } finally {
         try {
             if (client.usable) await client.logout();
@@ -92,25 +112,34 @@ async function processNewEmails() {
     }
 }
 
+async function runLoop() {
+    try {
+        await processNewEmails();
+    } catch (e) {
+        console.error("Loop Execution Error:", e.message);
+    }
+    setTimeout(runLoop, 20 * 1000); 
+}
+
 export async function startEmailListener() {
     if (emailListenerStarted) return;
     emailListenerStarted = true;
 
-    console.log('📧 Email listener started...');
+    console.log('📧 Booting up IMAP Email Listener Connection...');
 
     const client = createClient();
     try {
         await client.connect();
         const mailbox = await client.mailboxOpen('INBOX');
         lastUID = mailbox.uidNext - 1;
-        console.log(`📧 Starting from UID: ${lastUID}`);
+        console.log(`📡 Connection active. Watching inbox starting above UID: ${lastUID}`);
     } catch (err) {
-        console.error('Email init error:', err.message);
+        console.error('❌ IMAP Initialization failed:', err.message);
     } finally {
         try {
             if (client.usable) await client.logout();
         } catch (_) {}
     }
 
-    setInterval(() => processNewEmails(), 30 * 1000);
+    runLoop();
 }
