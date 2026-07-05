@@ -126,6 +126,9 @@ function startExpiryJob() {
     }, 60 * 1000);
 }
 
+// Global flag to prevent duplicate pairings during execution loops
+let executionFlagPairing = false;
+
 // ── WHATSAPP ───────────────────────────────────────────────
 async function connectToWhatsApp() {
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -138,31 +141,35 @@ async function connectToWhatsApp() {
         auth: state,
         printQRInTerminal: false,
         logger: (await import('pino')).default({ level: 'silent' }),
-        browser: ['Mac OS', 'Chrome', '121.0.0.0'], // Updated to clean browser payload array standard
+        browser: ['Mac OS', 'Chrome', '121.0.0.0'], 
         syncFullHistory: false
     });
 
-    // ── REQUEST PAIRING CODE LOGIC ─────────────────────────
-    if (!sock.authState.creds.registered) {
-        const botPhoneNumber = '2349154275394'; 
-        
-        setTimeout(async () => {
-            try {
-                let code = await sock.requestPairingCode(botPhoneNumber);
-                code = code?.match(/.{1,4}/g)?.join("-") || code;
-                console.log('\n----------------------------------------');
-                console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
-                console.log('----------------------------------------\n');
-            } catch (pairingErr) {
-                console.error('Error fetching pairing code:', pairingErr.message);
-            }
-        }, 3000);
-    }
-
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
+
+        // Safely trigger pairing code only inside the official connection update event loop
+        if (!sock.authState.creds.registered && !executionFlagPairing) {
+            executionFlagPairing = true;
+            
+            const botPhoneNumber = '2349154275394'; 
+            console.log(`⏳ Requesting unique pairing code for: ${botPhoneNumber}...`);
+            
+            setTimeout(async () => {
+                try {
+                    let code = await sock.requestPairingCode(botPhoneNumber);
+                    code = code?.match(/.{1,4}/g)?.join("-") || code;
+                    console.log('\n----------------------------------------');
+                    console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
+                    console.log('----------------------------------------\n');
+                } catch (pairingErr) {
+                    console.error('❌ Error fetching pairing code:', pairingErr.message);
+                    executionFlagPairing = false; // Reset on failure to allow clean retry
+                }
+            }, 5000); // 5-second window spacing ensures connection stabilizes first
+        }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -170,6 +177,7 @@ async function connectToWhatsApp() {
             currentSock = null;
 
             if (shouldReconnect) {
+                // Clear state memory safely before re-running function instance
                 connectToWhatsApp();
             } else {
                 console.log('❌ Logged out. Clear whatsapp_auth table and restart.');
@@ -330,4 +338,4 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp().catch(err => console.log('Unexpected error: ' + err));
-                
+        
