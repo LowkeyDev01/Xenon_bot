@@ -136,15 +136,14 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false, // Turned off QR code generation
+        printQRInTerminal: false,
         logger: (await import('pino')).default({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'), // Keeping your specific desktop config
+        browser: ['Mac OS', 'Chrome', '121.0.0.0'], // Updated to clean browser payload array standard
         syncFullHistory: false
     });
 
     // ── REQUEST PAIRING CODE LOGIC ─────────────────────────
     if (!sock.authState.creds.registered) {
-        // Formatted to international standard numbers only: 2349154275394
         const botPhoneNumber = '2349154275394'; 
         
         setTimeout(async () => {
@@ -157,7 +156,7 @@ async function connectToWhatsApp() {
             } catch (pairingErr) {
                 console.error('Error fetching pairing code:', pairingErr.message);
             }
-        }, 3000); // 3-second delay to ensure socket readiness
+        }, 3000);
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -191,7 +190,6 @@ async function connectToWhatsApp() {
         const sender = msg.key.remoteJid;
         console.log('Full JID:', sender);
 
-        // Handle both @s.whatsapp.net and @lid formats
         const waId = sender.includes('@lid') ? sender : sender.split('@')[0];
 
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
@@ -203,7 +201,7 @@ async function connectToWhatsApp() {
                 const { rows: existing } = await pool.query(
                     `SELECT * FROM pending_payments 
                      WHERE wa_id = $1 AND status = 'pending'
-                     ORDER BY create_at DESC LIMIT 1`, // Retaining your original "create_at" naming convention
+                     ORDER BY create_at DESC LIMIT 1`,
                     [waId]
                 );
 
@@ -268,7 +266,7 @@ async function connectToWhatsApp() {
                 const { rows } = await pool.query(
                     `SELECT * FROM pending_payments 
                      WHERE wa_id = $1
-                     ORDER BY create_at DESC LIMIT 1`, // Retaining your original "create_at" naming convention
+                     ORDER BY create_at DESC LIMIT 1`,
                     [waId]
                 );
 
@@ -332,4 +330,4 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp().catch(err => console.log('Unexpected error: ' + err));
-    
+                
