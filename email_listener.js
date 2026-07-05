@@ -5,25 +5,19 @@ import { onlineDBClient as pool } from './db.js';
 let lastUID = 0;
 let emailListenerStarted = false;
 
+// YOUR ORIGINAL WORKING REGEX LOGIC - UNTOUCHED
 function extractPaymentDetails(text) {
-    // Collapse all HTML spacing fragments, line breaks, and tabs into a single clean line string
-    const cleanText = text.replace(/\s+/g, ' ').trim();
-    
-    // Debug log to trace matching text in your server stdout
-    console.log("🔍 Cleaned Email Text for matching:", cleanText);
-
-    // Matches Moniepoint receipt structures resiliently regardless of changing layout nodes
-    const amountMatch = cleanText.match(/Credit Amount\s*[:\-]?\s*([0-9,]+\.[0-9]{2})/i);
-    const senderMatch = cleanText.match(/Sender(?:'s)?\s*Name\s*[:\-]?\s*(?:from\s+)?([^|]+)/i);
-    const dateTimeMatch = cleanText.match(/Date\s*&\s*Time\s*[:\-]?\s*([^|]+)\|([^|\n]+)/i);
+    const amountMatch = text.match(/Credit Amount\s*\n\s*([0-9,]+\.[0-9]{2})/i);
+    const senderMatch = text.match(/Sender's Name:\s*\n\s*from (.+)/i);
+    const dateTimeMatch = text.match(/Date & Time:\s*\n\s*(.+)\s*\|\s*(.+)/i);
 
     if (!amountMatch) return null;
 
     return {
         amount: parseFloat(amountMatch[1].replace(/,/g, '')),
-        senderName: senderMatch ? senderMatch[1].trim() : 'Unknown Sender',
-        date: dateTimeMatch ? dateTimeMatch[1].trim() : new Date().toLocaleDateString(),
-        time: dateTimeMatch ? dateTimeMatch[2].trim() : new Date().toLocaleTimeString(),
+        senderName: senderMatch ? senderMatch[1].trim() : null,
+        date: dateTimeMatch ? dateTimeMatch[1].trim() : null,
+        time: dateTimeMatch ? dateTimeMatch[2].trim() : null,
     };
 }
 
@@ -36,9 +30,7 @@ function createClient() {
             user: process.env.GMAIL_USER,
             pass: process.env.GMAIL_APP_PASSWORD
         },
-        logger: false,
-        connectionTimeout: 15000,
-        greetingTimeout: 15000
+        logger: false
     });
 }
 
@@ -49,33 +41,31 @@ async function processNewEmails() {
         await client.connect();
         await client.mailboxOpen('INBOX');
 
+        // Clean search criteria
         const searchCriteria = { from: 'moniepoint', seen: false };
         const messages = client.fetch(searchCriteria, { source: true, uid: true });
 
-        // Batch collector to safely execute flags after the live stream closes
+        // Array to collect UIDs that successfully matched and updated the database
         const uidsToMarkAsSeen = [];
 
         for await (const msg of messages) {
             if (msg.uid <= lastUID) continue; 
             if (msg.uid > lastUID) lastUID = msg.uid;
 
-            console.log(`📧 Found new unread Moniepoint email! UID: ${msg.uid}`);
-
             const parsed = await simpleParser(msg.source);
-            
             let body = parsed.text || '';
             if (!body && parsed.html) {
-                body = parsed.html.replace(/<[^>]*>/g, ' ');
+                body = parsed.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
             }
 
             const details = extractPaymentDetails(body);
 
             if (!details) {
-                console.log('⚠️ Could not match pattern fields inside this email.');
+                console.log('⚠️ Could not extract payment details from email.');
                 continue;
             }
 
-            console.log(`💰 Payment parsed: ₦${details.amount} from ${details.senderName}`);
+            console.log(`💰 Payment detected: ₦${details.amount} from ${details.senderName} on ${details.date} at ${details.time}`);
 
             const { rows } = await pool.query(
                 `UPDATE pending_payments
@@ -89,22 +79,24 @@ async function processNewEmails() {
             );
 
             if (rows.length === 0) {
-                console.log(`⚠️ No active pending database record matched for exactly ₦${details.amount}`);
+                console.log(`⚠️ No pending order found for ₦${details.amount}`);
                 continue;
             }
 
-            console.log(`✅ Database Updated successfully! WhatsApp ID: ${rows[0].wa_id}`);
+            console.log(`✅ Payment matched! wa_id: ${rows[0].wa_id}`);
+            
+            // Push the UID to the array instead of executing client.messageFlagsAdd inside the stream
             uidsToMarkAsSeen.push(msg.uid);
         }
 
-        // Apply SEEN status outside the fetch iteration loop to avoid stream collision deadlocks
+        // FIXED: Mark them all as SEEN at once after the live data stream is closed
         if (uidsToMarkAsSeen.length > 0) {
             await client.messageFlagsAdd({ uid: uidsToMarkAsSeen }, ['\\Seen']);
             console.log(`🏁 Successfully marked UIDs [${uidsToMarkAsSeen.join(', ')}] as SEEN.`);
         }
 
     } catch (err) {
-        console.error('❌ Email Processing Error:', err.message);
+        console.error('Email Listener Error:', err.message);
     } finally {
         try {
             if (client.usable) await client.logout();
@@ -112,29 +104,26 @@ async function processNewEmails() {
     }
 }
 
+// Loop worker using safe setTimeout to ensure cycles never overlap or jam connections
 async function runLoop() {
-    try {
-        await processNewEmails();
-    } catch (e) {
-        console.error("Loop Execution Error:", e.message);
-    }
-    setTimeout(runLoop, 20 * 1000); 
+    await processNewEmails();
+    setTimeout(runLoop, 30 * 1000);
 }
 
 export async function startEmailListener() {
     if (emailListenerStarted) return;
     emailListenerStarted = true;
 
-    console.log('📧 Booting up IMAP Email Listener Connection...');
+    console.log('📧 Email listener started...');
 
     const client = createClient();
     try {
         await client.connect();
         const mailbox = await client.mailboxOpen('INBOX');
         lastUID = mailbox.uidNext - 1;
-        console.log(`📡 Connection active. Watching inbox starting above UID: ${lastUID}`);
+        console.log(`📧 Starting from UID: ${lastUID}`);
     } catch (err) {
-        console.error('❌ IMAP Initialization failed:', err.message);
+        console.error('Email init error:', err.message);
     } finally {
         try {
             if (client.usable) await client.logout();
