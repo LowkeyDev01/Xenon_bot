@@ -136,22 +136,34 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: false, // Turned off QR code generation
         logger: (await import('pino')).default({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'),
+        browser: Browsers.macOS('Desktop'), // Keeping your specific desktop config
         syncFullHistory: false
     });
+
+    // ── REQUEST PAIRING CODE LOGIC ─────────────────────────
+    if (!sock.authState.creds.registered) {
+        // Formatted to international standard numbers only: 2349154275394
+        const botPhoneNumber = '2349154275394'; 
+        
+        setTimeout(async () => {
+            try {
+                let code = await sock.requestPairingCode(botPhoneNumber);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log('\n----------------------------------------');
+                console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
+                console.log('----------------------------------------\n');
+            } catch (pairingErr) {
+                console.error('Error fetching pairing code:', pairingErr.message);
+            }
+        }, 3000); // 3-second delay to ensure socket readiness
+    }
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            console.log('\n--- SCAN THIS QR CODE WITH WHATSAPP ---');
-            qrcode.generate(qr, { small: true });
-            console.log('----------------------------------------\n');
-        }
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -183,14 +195,15 @@ async function connectToWhatsApp() {
         const waId = sender.includes('@lid') ? sender : sender.split('@')[0];
 
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        const cleanedText = text.trim().toLowerCase();
 
         // ── COMMAND: BUY ───────────────────────────────────
-        if (text?.toLowerCase() === 'buy') {
+        if (cleanedText === 'buy') {
             try {
                 const { rows: existing } = await pool.query(
                     `SELECT * FROM pending_payments 
                      WHERE wa_id = $1 AND status = 'pending'
-                     ORDER BY created_at DESC LIMIT 1`,
+                     ORDER BY create_at DESC LIMIT 1`, // Retaining your original "create_at" naming convention
                     [waId]
                 );
 
@@ -223,9 +236,8 @@ async function connectToWhatsApp() {
                 });
             }
         }
-
         // ── COMMAND: CANCEL ────────────────────────────────
-        if (text?.toLowerCase() === 'cancel') {
+        else if (cleanedText === 'cancel') {
             try {
                 const { rows } = await pool.query(
                     `UPDATE pending_payments SET status = 'cancelled'
@@ -250,14 +262,13 @@ async function connectToWhatsApp() {
                 });
             }
         }
-
         // ── COMMAND: PAID ──────────────────────────────────
-        if (text?.toLowerCase() === 'paid') {
+        else if (cleanedText === 'paid') {
             try {
                 const { rows } = await pool.query(
                     `SELECT * FROM pending_payments 
                      WHERE wa_id = $1
-                     ORDER BY created_at DESC LIMIT 1`,
+                     ORDER BY create_at DESC LIMIT 1`, // Retaining your original "create_at" naming convention
                     [waId]
                 );
 
@@ -297,7 +308,28 @@ async function connectToWhatsApp() {
                 });
             }
         }
+        // ── FALLBACK / UNKNOWN COMMAND ─────────────────────
+        else {
+            try {
+                await sock.sendMessage(sender, {
+                    text: `👋 *Welcome to Xenon Bot!*\n\n` +
+                        `I am an automated system designed to help you buy codes instantly.\n\n` +
+                        `🛠️ *Available Commands:*\n` +
+                        `• Send *buy* — Start a new order and generate your unique account payment details.\n` +
+                        `• Send *paid* — Request immediate payment verification after doing your transfer.\n` +
+                        `• Send *cancel* — Cancel your current pending order status.\n\n` +
+                        `💡 *How it works:*\n` +
+                        `1. You type *buy*.\n` +
+                        `2. The system assigns a unique amount containing small kobos (e.g. ₦1,000.12).\n` +
+                        `3. You make the transfer *exactly* as specified.\n` +
+                        `4. Once your bank updates, your purchase code is instantly dropped here!`
+                });
+            } catch (err) {
+                console.error('Introduction Menu Error:', err.message);
+            }
+        }
     });
 }
 
 connectToWhatsApp().catch(err => console.log('Unexpected error: ' + err));
+    
