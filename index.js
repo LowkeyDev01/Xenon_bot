@@ -1,5 +1,4 @@
 import makeWASocket, {
-    useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
     Browsers
@@ -126,9 +125,6 @@ function startExpiryJob() {
     }, 60 * 1000);
 }
 
-// Global flag to prevent duplicate pairings during execution loops
-let executionFlagPairing = false;
-
 // ── WHATSAPP ───────────────────────────────────────────────
 async function connectToWhatsApp() {
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -139,36 +135,20 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: true, 
         logger: (await import('pino')).default({ level: 'silent' }),
-        browser: ['Mac OS', 'Chrome', '121.0.0.0'], 
+        browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
 
-        // Safely trigger pairing code only inside the official connection update event loop
-        if (!sock.authState.creds.registered && !executionFlagPairing) {
-            executionFlagPairing = true;
-            
-            const botPhoneNumber = '2349154275394'; 
-            console.log(`⏳ Requesting unique pairing code for: ${botPhoneNumber}...`);
-            
-            setTimeout(async () => {
-                try {
-                    let code = await sock.requestPairingCode(botPhoneNumber);
-                    code = code?.match(/.{1,4}/g)?.join("-") || code;
-                    console.log('\n----------------------------------------');
-                    console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
-                    console.log('----------------------------------------\n');
-                } catch (pairingErr) {
-                    console.error('❌ Error fetching pairing code:', pairingErr.message);
-                    executionFlagPairing = false; // Reset on failure to allow clean retry
-                }
-            }, 5000); // 5-second window spacing ensures connection stabilizes first
+        if (qr) {
+            console.log('\n📸 NEW QR CODE GENERATED! Scan this in your WhatsApp settings:');
+            qrcode.generate(qr, { small: true });
         }
 
         if (connection === 'close') {
@@ -177,8 +157,7 @@ async function connectToWhatsApp() {
             currentSock = null;
 
             if (shouldReconnect) {
-                // Clear state memory safely before re-running function instance
-                connectToWhatsApp();
+                setTimeout(() => connectToWhatsApp(), 10000);
             } else {
                 console.log('❌ Logged out. Clear whatsapp_auth table and restart.');
             }
@@ -209,7 +188,7 @@ async function connectToWhatsApp() {
                 const { rows: existing } = await pool.query(
                     `SELECT * FROM pending_payments 
                      WHERE wa_id = $1 AND status = 'pending'
-                     ORDER BY create_at DESC LIMIT 1`,
+                     ORDER BY created_at DESC LIMIT 1`,
                     [waId]
                 );
 
@@ -274,7 +253,7 @@ async function connectToWhatsApp() {
                 const { rows } = await pool.query(
                     `SELECT * FROM pending_payments 
                      WHERE wa_id = $1
-                     ORDER BY create_at DESC LIMIT 1`,
+                     ORDER BY created_at DESC LIMIT 1`,
                     [waId]
                 );
 
