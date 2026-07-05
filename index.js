@@ -11,24 +11,48 @@ process.on('unhandledRejection', (err) => {
     console.error('Unhandled Rejection:', err?.message);
 });
 
-// ── EXPRESS ────────────────────────────────────────────────
+// ── EXPRESS & CORS CONFIGURATION ───────────────────────────
 const app = express();
-app.use(cors());
+
+// Safe open wildcard settings that capture pre-flight CORS operations natively
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors()); 
+
 app.use(express.json());
 
-// ── KOBO LOGIC ─────────────────────────────────────────────
+// ── TIMEZONE-SAFE INTEGRATION KOBO LOGIC ───────────────────
 async function assignUniqueAmount(baseAmount = 1000) {
+    // 1. Calculate exactly 15 minutes ago using JavaScript's system clock
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+
+    // 2. Query using the explicit UTC ISO string to bypass database timezone discrepancies
     const { rows } = await pool.query(
         `SELECT amount FROM pending_payments 
          WHERE status = 'pending'
-         AND created_at > NOW() - INTERVAL '15 minutes'`
+         AND created_at > $1`,
+        [fifteenMinutesAgo]
     );
 
-    const usedKobos = new Set(rows.map(r => Math.round((r.amount % 1) * 100)));
+    // 3. Convert decimal values to clean integers to eliminate floating point issues
+    const usedKobos = new Set(
+        rows.map(r => {
+            const totalKobo = Math.round(parseFloat(r.amount) * 100);
+            return totalKobo % 100;
+        })
+    );
 
+    console.log(`📊 Active Kobo slots taken in the last 15m:`, Array.from(usedKobos));
+
+    // 4. Find the first empty slot from .01 to .99
     for (let kobo = 1; kobo <= 99; kobo++) {
         if (!usedKobos.has(kobo)) {
-            return baseAmount + (kobo / 100);
+            const finalAmount = parseFloat((baseAmount + (kobo / 100)).toFixed(2));
+            console.log(`✅ Assigned unique slot: ₦${finalAmount}`);
+            return finalAmount;
         }
     }
 
@@ -48,11 +72,14 @@ async function createPendingPayment(phone) {
 function startExpiryJob() {
     setInterval(async () => {
         try {
+            // Also updated to use explicit JS clock string to keep expiration synced perfectly
+            const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
             await pool.query(
                 `UPDATE pending_payments 
                  SET status = 'expired'
                  WHERE status = 'pending'
-                 AND created_at < NOW() - INTERVAL '15 minutes'`
+                 AND created_at < $1`,
+                [fifteenMinutesAgo]
             );
         } catch (err) {
             console.error('Expiry Job Error:', err.message);
@@ -62,7 +89,6 @@ function startExpiryJob() {
 
 // ── API ROUTES ─────────────────────────────────────────────
 
-// GET /dashboard?phone=2348137811382
 app.get('/dashboard', async (req, res) => {
     const { phone } = req.query;
     if (!phone) return res.status(400).json({ error: 'Phone required' });
@@ -92,7 +118,6 @@ app.get('/dashboard', async (req, res) => {
     }
 });
 
-// POST /buy
 app.post('/buy', async (req, res) => {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone required' });
@@ -117,7 +142,6 @@ app.post('/buy', async (req, res) => {
     }
 });
 
-// POST /cancel
 app.post('/cancel', async (req, res) => {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone required' });
@@ -135,7 +159,6 @@ app.post('/cancel', async (req, res) => {
     }
 });
 
-// GET /check-payment?phone=2348137811382
 app.get('/check-payment', async (req, res) => {
     const { phone } = req.query;
     if (!phone) return res.status(400).json({ error: 'Phone required' });
