@@ -125,6 +125,8 @@ function startExpiryJob() {
     }, 60 * 1000);
 }
 
+let executionFlagPairing = false;
+
 // ── WHATSAPP ───────────────────────────────────────────────
 async function connectToWhatsApp() {
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -135,7 +137,7 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: true, 
+        printQRInTerminal: false, 
         logger: (await import('pino')).default({ level: 'silent' }),
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false
@@ -144,20 +146,38 @@ async function connectToWhatsApp() {
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect } = update;
 
-        if (qr) {
-            console.log('\n📸 NEW QR CODE GENERATED! Scan this in your WhatsApp settings:');
-            qrcode.generate(qr, { small: true });
+        // Request pairing code safely if unregistered and not already processing
+        if (!sock.authState.creds.registered && !executionFlagPairing) {
+            executionFlagPairing = true;
+            const botPhoneNumber = '2349154275394'; 
+            console.log(`⏳ Requesting unique pairing code for: ${botPhoneNumber}...`);
+            
+            setTimeout(async () => {
+                try {
+                    let code = await sock.requestPairingCode(botPhoneNumber);
+                    code = code?.match(/.{1,4}/g)?.join("-") || code;
+                    console.log('\n----------------------------------------');
+                    console.log(`👉 YOUR WHATSAPP PAIRING CODE: ${code}`);
+                    console.log('----------------------------------------\n');
+                } catch (pairingErr) {
+                    console.error('❌ Error fetching pairing code:', pairingErr.message);
+                    executionFlagPairing = false; 
+                }
+            }, 10000); // 10-second buffer allows socket layers to settle first
         }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reason:', lastDisconnect.error?.message, 'Reconnecting:', shouldReconnect);
             currentSock = null;
+            executionFlagPairing = false;
 
             if (shouldReconnect) {
-                setTimeout(() => connectToWhatsApp(), 10000);
+                // Wait 15 seconds before reconnecting to clear endpoint rate limiting
+                console.log('⏳ Waiting 15 seconds before retrying connection to reset rate limit...');
+                setTimeout(() => connectToWhatsApp(), 15000);
             } else {
                 console.log('❌ Logged out. Clear whatsapp_auth table and restart.');
             }
@@ -253,7 +273,7 @@ async function connectToWhatsApp() {
                 const { rows } = await pool.query(
                     `SELECT * FROM pending_payments 
                      WHERE wa_id = $1
-                     ORDER BY created_at DESC LIMIT 1`,
+                     ORDER BY create_at DESC LIMIT 1`,
                     [waId]
                 );
 
@@ -317,4 +337,4 @@ async function connectToWhatsApp() {
 }
 
 connectToWhatsApp().catch(err => console.log('Unexpected error: ' + err));
-        
+                
